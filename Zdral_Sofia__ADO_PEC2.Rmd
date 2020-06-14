@@ -1,0 +1,587 @@
+---
+title: "ADO PEC2"
+author: "Sofía Zdral"
+date: "9/6/2020"
+output: html_document
+---
+
+#*PEC 2: Analizando datos de RNAseq*
+
+### PREPARACIÓN DE LOS DATOS 
+
+##### Cargamos los datos de los ficheros "targets" y "counts"
+````{r, include = FALSE}
+targets=read.csv("D:/BIOESTADÍSTICA-INFORMÁTICA/Análisis de datos ómicos/PEC2/targets.csv",header=TRUE,sep=",") #Cargamos los datos del fichero targets.csv
+targets
+````
+
+##### Seleccionamos 30 muestras, n=10 NIT, n=10 SFI y n=10 ELI, de forma aleatoria
+````{r, include = FALSE}
+set.seed(679987)
+targets_NIT<-subset(targets, targets$Group=="NIT")
+targets_SFI<-subset(targets, targets$Group=="SFI")
+targets_ELI<-subset(targets, targets$Group=="ELI")
+library("dplyr")
+NIT <- sample_n(targets_NIT, size = 10, replace=FALSE)
+SFI <- sample_n(targets_SFI, size = 10, replace=FALSE)
+ELI <- sample_n(targets_ELI, size = 10, replace=FALSE)
+targets_30<-rbind(NIT, SFI, ELI)
+targets_30
+````
+
+##### Cargamos los datos del fichero counts_30.csv que contiene los datos de counts de las 30 muestras que arriba hemos elegido aleatoriamente y que previamente han sido ordenadas las muestras según aparecían en "targets_30".
+````{r, include = FALSE}
+counts_30=read.csv("D:/BIOESTADÍSTICA-INFORMÁTICA/Análisis de datos ómicos/PEC2/counts_30_ord.csv",header=TRUE,sep=";") 
+counts_30
+````
+
+````{r, echo = FALSE}
+library("DESeq2")
+````
+
+````{r, echo = FALSE}
+tmp <- gsub("\\..*","",counts_30[,1])
+row.names(counts_30)<-tmp
+counts_30<-counts_30[,-1]
+````
+
+##### Creamos un objeto de clase DESeqDataSetMatrix con los datos de expresión de las 30 muestras que han sido escogidas al azar
+````{r}
+dds <- DESeqDataSetFromMatrix(countData = counts_30, colData = targets_30, design = ~ Group)
+dds
+````
+
+### PREPROCESADO DE LOS DATOS: FILTRAJE Y NORMALIZACIÓN 
+
+#### Lo primero que hacemos es prefiltrar: eliminamos los genes que tienen cero o bajo número de reads.
+```{r}
+nrow(dds)
+dds<- dds[ rowSums(counts(dds)) > 1, ]
+nrow(dds) #De 56202 genes nos quedamos con 43507
+```
+
+##### A continuación, vamos a hacer dos transformaciones: transformación estabilizadora de la varianza (vst) y transformación logarítmica regularizada (rlog).
+
+```{r, include = FALSE}
+# Transformación estabilizadora de la varianza (vst)
+vsd <- vst(dds, blind = FALSE)
+head(assay(vsd), 3)
+colData(vsd)
+```
+
+```{r, include = FALSE}
+# Transformación logarítmica regularizada (rlog)
+rld <- rlog(dds, blind = FALSE)
+head(assay(rld), 3)
+````
+
+##### Y el efecto de las transformaciones lo veremos en el gráfico que aparece a continuación. Hemos usado la transformación log2 de los "counts" normalizados.
+```{r, echo = FALSE}
+library("ggplot2")
+
+dds<- estimateSizeFactors(dds)
+
+df <- bind_rows(
+  as_data_frame(log2(counts(dds, normalized=TRUE)[, 1:2]+1)) %>%
+         mutate(transformation = "log2(x + 1)"),
+  as_data_frame(assay(vsd)[, 1:2]) %>% mutate(transformation = "vst"),
+  as_data_frame(assay(rld)[, 1:2]) %>% mutate(transformation = "rlog"))
+  
+colnames(df)[1:2] <- c("x", "y")  
+
+ggplot(df, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation)  
+```
+
+````{r include = FALSE}
+png("log_vst.png", width = 20, height = 12,
+     units = "cm", res = 600, pointsize = 10)
+ggplot(df, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation)
+dev.off()
+````
+
+##### A continuación, se ha estudiado la distancias entre las muestras incluidas en el estudio. 
+````{r, include = FALSE}
+sampleDists <- dist(t(assay(vsd)))
+sampleDists
+````
+
+##### Para ver mejor la similitud entre muestras hacemos una matriz de distancias con las 30 muestras y la representamos con un heatmap
+````{r, echo = FALSE}
+library("pheatmap") 
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste(dds$ShortName, sep = " - " )
+colnames(sampleDistMatrix) <- dds$ShortName
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors) #Como era de esperar, la menor distancia entre muestras (0, azul más oscuro) es cuando enfrentamos a una muestra consigo misma. 
+````
+
+````{r include = FALSE}
+png("heatmap30.png", width = 20, height = 16,
+     units = "cm", res = 600, pointsize = 10)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+dev.off()
+````
+
+##### Asimismo, hemos hecho un Análisis de Componentes Principales (PCA) con los datos de vsd para ver cómo se agrupan las 30 muestras.
+````{r, echo = FALSE}
+library(ggplot2)
+data <- plotPCA(vsd, intgroup = c("Group"), returnData=TRUE)
+percentVar <- round(100 * attr(data, "percentVar")) 
+ggplot(data, aes(PC1, PC2, color=Group, shape=Group)) + geom_point(size=3) + xlab(paste0("PC1: ",percentVar[1],"% variance")) + ylab(paste0("PC2: ",percentVar[2],"% variance"))
+````
+
+````{r include = FALSE}
+png("pca30.png", width = 20, height = 12,
+     units = "cm", res = 600, pointsize = 10)
+ggplot(data, aes(PC1, PC2, color=Group, shape=Group)) + geom_point(size=3) + xlab(paste0("PC1: ",percentVar[1],"% variance")) + ylab(paste0("PC2: ",percentVar[2],"% variance"))
+dev.off()
+````
+
+##### El primer componente, PC1, acumula el 67% de la varianza, mientras que el Segundo componente, PC2, acumula el 8% de la varianza de los datos normalizados (vst). Lo que podemos observar en primer lugar es que las muestras de ELI se agrupan claramente en sentido positivo del PC1, separándose de las dos categorías restantes . La agrupación de las otras dos categorías, SFI y NIT, no es tan clara, aunque sí parece que la expresión génica de las muestras de NIT difiere más de las de ELI que las de SFI. 
+
+##### Asimismo, hemos representando también las muestras con un MDS plot usando los datos de la matriz de distancias. 
+```{r, echo = FALSE}
+mds <- as.data.frame(colData(vsd))  %>%
+         cbind(cmdscale(sampleDistMatrix))
+ggplot(mds, aes(x = `1`, y = `2`, color = Group, shape = Group)) +
+  geom_point(size = 3) + coord_fixed()
+````
+
+````{r include = FALSE}
+png("mds30.png", width = 20, height = 16,
+     units = "cm", res = 600, pointsize = 10)
+ggplot(mds, aes(x = `1`, y = `2`, color = Group, shape = Group)) +
+  geom_point(size = 3) + coord_fixed()
+dev.off()
+````
+
+##### Como podemos observar en el gráfico, siguen las muestras del grupo ELI separándose de las de NIT y SFI (que solapan mucho), no obstante, esta separación es menos evidente que en el PCA. Por tanto, en nuestro caso es más recomendable usar el PCA a la hora de explorar nuestros datos y buscar similitudes en la expresión génica de las distintas muestras.
+
+##### Finalmente, se ha utilizado el paquete sva para eliminar los posibles efectos del Batch.
+````{r, echo = FALSE}
+library("sva")
+
+dat  <- counts(dds, normalized = TRUE)
+idx  <- rowMeans(dat) > 1
+dat  <- dat[idx, ]
+mod  <- model.matrix(~ Group, colData(dds))
+mod0 <- model.matrix(~   1, colData(dds))
+svseq <- svaseq(dat, mod, mod0, n.sv = 2)
+svseq$sv
+````
+
+##### Y utilizado el paquete RUVSeq para eliminar de nuestros datos de RNAseq la variación no deseada.
+````{r, Echo = FALSE}
+library("RUVSeq")
+
+set <- newSeqExpressionSet(counts(dds))
+idx  <- rowSums(counts(set) > 5) >= 2
+set  <- set[idx, ]
+set <- betweenLaneNormalization(set, which="upper")
+not.sig1<-rownames(res_SFI_NIT)[which(res_SFI_NIT$pvalue > .1)]
+not.sig2<-rownames(res_SFI_ELI)[which(res_SFI_ELI$pvalue > .1)]
+not.sig3<-rownames(res_NIT_ELI)[which(res_NIT_ELI$pvalue > .1)]
+
+empirical1<- rownames(set)[ rownames(set) %in% not.sig1]
+set1<- RUVg(set, empirical1, k=2)
+pData(set1)
+
+empirical2<- rownames(set)[ rownames(set) %in% not.sig2]
+set2<- RUVg(set, empirical2, k=2)
+pData(set2)
+
+empirical3<- rownames(set)[ rownames(set) %in% not.sig3]
+set3<- RUVg(set, empirical3, k=2)
+pData(set3)
+````
+
+### ANÁLISIS DE EXPRESIÓN DIFERENCIAL
+
+```{r, include = FALSE}
+library(DESeq)
+dds <- DESeq(dds, parallel =TRUE)
+```
+
+##### Lo primero que hacemos es obtener la tabla de results de cada una de las tres comparaciones usando DESeq2. Cada "result" contiene la información: baseMean, log2FoldChange, lfcSE, stat, pvalue y padj.
+
+##### *SFI versus NIT*
+````{r} 
+res_SFI_NIT<-results(dds, contrast = c("Group", "SFI", "NIT"))
+mcols(res_SFI_NIT, use.names = TRUE)
+summary(res_SFI_NIT)
+````
+##### Vemos que en esta comparación hay 433 genes upregulados poniendo como punto de corte un p.adjusted value de 0.1 y 139 genes downregulados al mismo nivel de significación.
+
+##### *SFI versus ELI*
+````{r} 
+res_SFI_ELI<-results(dds, contrast = c("Group", "SFI", "ELI"))
+mcols(res_SFI_ELI, use.names = TRUE)
+summary(res_SFI_ELI)
+````
+##### Vemos que en esta comparación hay 1032 genes upregulados poniendo como punto de corte un p.adjusted value de 0.1 y 2373 genes downregulados al mismo nivel de significación.
+
+##### *NIT versus ELI*
+````{r} 
+res_NIT_ELI<-results(dds, contrast = c("Group", "NIT", "ELI"))
+mcols(res_NIT_ELI, use.names = TRUE)
+summary(res_NIT_ELI)
+````
+##### Vemos que en esta comparación hay 2180 genes upregulados poniendo como punto de corte un p.adjusted value de 0.1 y 4141 genes downregulados al mismo nivel de significación
+
+##### A continuación, hacemos las anotaciones de los resultados para poder saber a qué gen corresponde cada valor de los mencionados utilizando los paquetes de Bioconductor: AnnotationDbi y EnsDb.Hsapiens.v86. 
+````{r, include = FALSE}
+library(AnnotationDbi)
+library(EnsDb.Hsapiens.v86)
+````
+
+````{r, include = FALSE}
+res_SFI_NIT$symbol<-mapIds(EnsDb.Hsapiens.v86,
+                     keys=row.names(res_SFI_NIT),
+                     column="SYMBOL",
+                     keytype="GENEID",
+                     multiVals="first")
+res_SFI_ELI$symbol<-mapIds(EnsDb.Hsapiens.v86,
+                     keys=row.names(res_SFI_ELI),
+                     column="SYMBOL",
+                     keytype="GENEID",
+                     multiVals="first")
+res_NIT_ELI$symbol<-mapIds(EnsDb.Hsapiens.v86,
+                     keys=row.names(res_NIT_ELI),
+                     column="SYMBOL",
+                     keytype="GENEID",
+                     multiVals="first")
+````
+
+##### Ahora vamos a proceder a estudiar los genes más downregulados y upregulados en cada una de las tres comparaciones usando como criterio el p-adjusted value (padj) a un nivel de significación del 0.1 y ordenando los genes de acuerdo al valor de log2 fold change.
+
+###### *SFI versus NIT*
+###### Genes más downregulados:
+```{r}
+res_SFI_NIT_Sig <- subset(res_SFI_NIT, padj < 0.1)
+head(res_SFI_NIT_Sig[ order(res_SFI_NIT_Sig$log2FoldChange), ])
+```
+
+###### Genes más upregulados:
+```{r}
+head(res_SFI_NIT_Sig[ order(res_SFI_NIT_Sig$log2FoldChange, decreasing = TRUE), ])
+```
+
+
+###### *SFI versus ELI*
+###### Genes más downregulados:
+```{r}
+res_SFI_ELI_Sig <- subset(res_SFI_ELI, padj < 0.1)
+head(res_SFI_ELI_Sig[ order(res_SFI_ELI_Sig$log2FoldChange), ])
+```
+
+###### Genes más upregulados:
+```{r}
+head(res_SFI_ELI_Sig[ order(res_SFI_ELI_Sig$log2FoldChange, decreasing = TRUE), ])
+```
+
+###### *NIT versus ELI*
+###### Genes más downregulados:
+```{r}
+res_NIT_ELI_Sig <- subset(res_NIT_ELI, padj < 0.1)
+head(res_NIT_ELI_Sig[ order(res_NIT_ELI_Sig$log2FoldChange), ])
+```
+
+###### Genes más upregulados:
+```{r}
+head(res_NIT_ELI_Sig[ order(res_NIT_ELI_Sig$log2FoldChange, decreasing = TRUE), ])
+```
+
+
+#####  Finalmente, vamos a representar gráficamente los resultados en MAplots. En rojo, podemos observar los genes significativamente más diferencialmente expresados entre cada una de las comparaciones.
+````{r, echo = FALSE}
+plotMA(as.data.frame(res_SFI_NIT),ylim=c(-10,10)) #SFI versus NIT
+plotMA(as.data.frame(res_SFI_ELI),ylim=c(-10,12)) #SFI versus ELI
+plotMA(as.data.frame(res_NIT_ELI),ylim=c(-10,10)) #NIT versus ELI
+````
+
+````{r include = FALSE}
+png("MAPlot1.png", width = 14, height = 12,
+     units = "cm", res = 600, pointsize = 10)
+plotMA(as.data.frame(res_SFI_NIT),ylim=c(-10,10))
+dev.off()
+````
+
+````{r include = FALSE}
+png("MAPlot2.png", width = 14, height = 12,
+     units = "cm", res = 600, pointsize = 10)
+plotMA(as.data.frame(res_SFI_ELI),ylim=c(-10,12))
+dev.off()
+````
+
+````{r include = FALSE}
+png("MAPlot3.png", width = 14, height = 12,
+     units = "cm", res = 600, pointsize = 10)
+plotMA(as.data.frame(res_NIT_ELI),ylim=c(-10,12))
+dev.off()
+````
+
+
+### AGRUPACIÓN DE LOS GENES MÁS DIFERENCIALMENTE EXPRESADOS
+
+##### Lo primero que hacemos es seleccionar los 20 genes con las varianzas más altas entre las 30 muestras. A continuación representaremos la expresión de estos genes mediante un heatmap para ver cómo se comportan entre las diferentes muestras. Asimismo, se ha hecho un clustering tanto de los genes (filas) como de las muestras (columnas).
+
+```{r, echo = FALSE}
+library("genefilter")
+topVarGenes <- head(order(rowVars(assay(vsd)), decreasing = TRUE), 20)
+
+mat  <- assay(vsd)[topVarGenes, ]
+mat  <- mat - rowMeans(mat)
+colnames(mat) = dds$ShortName
+row.names(mat) = mapIds(EnsDb.Hsapiens.v86,
+                        keys=row.names(mat),
+                        column="SYMBOL",
+                        keytype="GENEID",
+                        multiVals="first") 
+anno <- as.data.frame(colData(vsd)[,"Group"])
+row.names(anno) = colnames(mat)
+colnames(anno) = "Group"
+pheatmap(mat, annotation_col = anno)
+```
+
+````{r include = FALSE}
+png("topVarGenes_phenomap.png", width = 20, height = 18,
+     units = "cm", res = 600, pointsize = 10)
+pheatmap(mat, annotation_col = anno)
+dev.off()
+````
+
+##### Vemos que hay genes que presentan varianzas muy altas en alguna de las muestras, como es el caso de CALCA en varias muestras de SFI, o IGHG4, IGHG2, IGHG3 e IGH4 entre otros en varias muestras de NIT. También se observan ciertos "comportamientos" en las varianzas de los genes entre las distintas muestras que permiten agruparlas por su varianza, aunque de forma general resulta bastante complicado de interpretar. 
+ 
+ 
+### ANOTACIÓN DE GENES Y EXPORTACIÓN DE LOS RESULTADOS
+
+##### El siguiente paso es anotar los genes que nos han salido diferencialmente expresados utilizando el paquete de Bioconductor para el genoma humano "org.Hs.eg.db" como referencia. Una vez realizada la anotación podremos realizar el análisis de enriquecimiento de genes y rutas metabólicas. Los genes diferencialmente expresados junto a sus datos de expresión (results) de cada una de las dos comparaciones se han exportado a un archivo .csv.
+
+`````{r,  include = FALSE}
+library("org.Hs.eg.db")
+library("AnnotationDbi")
+````
+
+##### Anotación para la comparación SFI vs NIT y almacenamiento 
+````{r}
+res_SFI_NIT$symbol <- mapIds(org.Hs.eg.db,
+                     keys=row.names(res_SFI_NIT),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_SFI_NIT$entrez <- mapIds(org.Hs.eg.db,
+                     keys=row.names(res_SFI_NIT),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+res_SFI_NIT_ord<- res_SFI_NIT[order(res_SFI_NIT$pvalue),]
+head(res_SFI_NIT_ord)
+res_SFI_NIT_ord_df<-as.data.frame(res_SFI_NIT_ord)
+write.csv(res_SFI_NIT_ord_df, file = "results_SFI_NIT.csv")
+````
+
+````{r, include = FALSE}
+head(res_SFI_NIT_ord_df$symbol, 100)
+````
+
+##### Anotación de los resultados de la comparación SFI vs ELI
+````{r}
+res_SFI_ELI$symbol <- mapIds(org.Hs.eg.db,
+                     keys=row.names(res_SFI_ELI),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_SFI_ELI$entrez <- mapIds(org.Hs.eg.db,
+                     keys=row.names(res_SFI_ELI),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_SFI_ELI_ord<- res_SFI_ELI[order(res_SFI_ELI$pvalue),]
+head(res_SFI_ELI_ord)
+res_SFI_ELI_ord_df<-as.data.frame(res_SFI_ELI_ord)
+write.csv(res_SFI_ELI_ord_df, file = "results_SFI_ELI.csv")
+````
+
+````{r, include = FALSE}
+head(res_SFI_ELI_ord_df$symbol, 100)
+````
+
+##### Anotación de los resultados de la comparación NIT vs ELI
+````{r, include = FALSE}
+res_NIT_ELI$symbol <- mapIds(org.Hs.eg.db,
+                     keys=row.names(res_NIT_ELI),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+res_NIT_ELI$entrez <- mapIds(org.Hs.eg.db,
+                     keys=row.names(res_NIT_ELI),
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+
+res_NIT_ELI_ord<- res_NIT_ELI[order(res_NIT_ELI$pvalue),]
+res_NIT_ELI_ord_df<-as.data.frame(res_NIT_ELI_ord)
+write.csv(res_NIT_ELI_ord_df, file = "results_NIT_ELI.csv")
+````
+
+`````{r}
+head(res_NIT_ELI_ord_df$symbol, 100)
+````
+
+
+### ESTUDIO DE ENRIQUECIMIENTO DE GENES (GO) Y RUTAS METABÓLICAS (KEGG)
+
+````{r}
+library(clusterProfiler)
+library("org.Hs.eg.db")
+
+OrgDb <- org.Hs.eg.db
+````
+
+
+##### SFI vs NIT
+````{r}
+geneList1<-as.vector(res_SFI_NIT_ord_df$log2FoldChange)
+names(geneList1)<- res_SFI_NIT_ord_df$entrez
+gene1<- na.omit(res_SFI_NIT_ord_df$entrez)
+
+go1 <- clusterProfiler::enrichGO(gene          = gene1,
+                                 OrgDb         = OrgDb,
+                                 ont           = "BP",
+                                 pAdjustMethod = "BH",
+                                 pvalueCutoff  = 0.05,
+                                 qvalueCutoff  = 0.05, 
+                                 readable      = TRUE)
+
+````
+
+`````{r}
+head(summary(go1)[,-10])
+barplot(go1, showCategory=10)
+dotplot(go1, showCategory=10)
+````
+
+
+````{r include = FALSE}
+png("barplot_go1.png", width = 26, height = 16,
+     units = "cm", res = 600, pointsize = 10)
+barplot(go1, showCategory=10)
+dev.off()
+````
+
+````{r include = FALSE}
+png("dotplot_go1.png", width = 26, height = 16,
+     units = "cm", res = 600, pointsize = 10)
+dotplot(go1, showCategory=10)
+dev.off()
+````
+
+
+````{r}
+kegg1<- clusterProfiler::enrichKEGG(gene= gene1,
+                 organism     = 'hsa',
+                 pAdjustMethod = "BH",
+                 pvalueCutoff = 0.05,
+                 qvalueCutoff  = 0.05)
+head(summary(kegg1)[,-10])
+barplot(kegg1, showCategory=10)
+dotplot(kegg1,showCategory=10)
+````
+
+
+````{r include = FALSE}
+png("barplot_ke1.png", width = 26, height = 16,
+     units = "cm", res = 600, pointsize = 10)
+barplot(kegg1, showCategory=10)
+dev.off()
+````
+
+````{r include = FALSE}
+png("dotplot_ke1.png", width = 26, height = 16,
+     units = "cm", res = 600, pointsize = 10)
+dotplot(kegg1,showCategory=10)
+dev.off()
+````
+   
+##### SFI vs ELI
+````{r}
+geneList2<-as.vector(res_SFI_ELI_ord_df$log2FoldChange)
+names(geneList2)<- res_SFI_ELI_ord_df$entrez
+gene2<- na.omit(res_SFI_ELI_ord_df$entrez)
+                
+go2 <- clusterProfiler::enrichGO(gene          = gene2,
+                                 OrgDb         = OrgDb,
+                                 ont           = "BP",
+                                 pAdjustMethod = "BH",
+                                 pvalueCutoff  = 0.05,
+                                 qvalueCutoff  = 0.05, 
+                                 readable      = TRUE)
+
+````
+
+`````{r}
+head(summary(go2)[,-10])
+barplot(go2, showCategory=10)
+dotplot(go2, showCategory=10)
+````
+
+````{r}
+kegg2<- clusterProfiler::enrichKEGG(gene= gene2,
+                 organism     = 'hsa',
+                 pAdjustMethod = "BH",
+                 pvalueCutoff = 0.05,
+                 qvalueCutoff  = 0.05)
+head(summary(kegg2)[,-10])
+barplot(kegg2, showCategory=10)
+dotplot(kegg2,showCategory=10)
+````
+
+
+##### NIT vs ELI
+
+````{r}
+geneList3<-as.vector(res_NIT_ELI_ord_df$log2FoldChange)
+names(geneList3)<- res_NIT_ELI_ord_df$entrez
+gene3<- na.omit(res_NIT_ELI_ord_df$entrez)
+
+go3 <- clusterProfiler::enrichGO(gene          = gene3,
+                                 OrgDb         = OrgDb,
+                                 ont           = "BP",
+                                 pAdjustMethod = "BH",
+                                 pvalueCutoff  = 0.05,
+                                 qvalueCutoff  = 0.05, 
+                                 readable      = TRUE)
+
+````
+
+`````{r}
+go3.df<- as.data.frame(go3)
+head(summary(go3)[,-10])
+barplot(go3, showCategory=10)
+dotplot(go3, showCategory=10)
+````
+
+````{r}
+kegg3<- clusterProfiler::enrichKEGG(gene= gene3,
+                 organism     = 'hsa',
+                 pAdjustMethod = "BH",
+                 pvalueCutoff = 0.05,
+                 qvalueCutoff  = 0.05)
+head(summary(kegg3)[,-10])
+barplot(kegg3, showCategory=10)
+dotplot(kegg3,showCategory=10)
+````
+
+
